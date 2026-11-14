@@ -1,0 +1,8 @@
+.env
+resume.pdf
+transcript.pdf
+outreach_drafts.csv
+professors.csv
+do_not_contact.csv
+sent_log.csv
+__pycache__/
