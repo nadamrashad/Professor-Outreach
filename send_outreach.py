@@ -8,7 +8,6 @@ do_not_contact.csv are filtered before any profile is fetched or sent.
 from __future__ import annotations
 
 import argparse
-import base64
 import csv
 import json
 import os
@@ -22,7 +21,6 @@ from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 
-import msal
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -299,59 +297,79 @@ def validate_draft(draft: dict[str, str]) -> None:
         raise OutreachError("Generated body contains an unresolved placeholder.")
 
 
-class GraphMailer:
-    def __init__(self) -> None:
-        self.client_id = require_setting("MS_CLIENT_ID")
-        tenant = require_setting("MS_TENANT_ID")
-        self.authority = f"https://login.microsoftonline.com/{tenant}"
-        self.scopes = ["Mail.Send"]
-        self.app = msal.PublicClientApplication(self.client_id, authority=self.authority)
-        self.account: dict[str, Any] | None = None
+class OutlookMailer:
+    """Send through the Outlook desktop profile configured for this Windows user."""
 
-    def _token(self) -> str:
-        if self.account:
-            cached = self.app.acquire_token_silent(self.scopes, account=self.account)
-            if cached and cached.get("access_token"):
-                return cached["access_token"]
-        flow = self.app.initiate_device_flow(scopes=self.scopes)
-        if "user_code" not in flow:
-            raise OutreachError(f"Could not start Microsoft sign-in: {flow.get('error_description', flow)}")
-        print(flow.get("message", "Complete Microsoft sign-in in the browser."), file=sys.stderr)
-        result = self.app.acquire_token_by_device_flow(flow)
-        if not result.get("access_token"):
-            raise OutreachError(f"Microsoft sign-in failed: {result.get('error_description', result)}")
-        accounts = self.app.get_accounts()
-        self.account = accounts[0] if accounts else None
-        return result["access_token"]
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise OutreachError("Outlook desktop sending is available only on Windows.")
+        self.sender = os.getenv(
+            "OUTLOOK_SENDER", "nada.mohamed1@ucalgary.ca"
+        ).strip().casefold()
+        if not self.sender:
+            raise OutreachError("Set OUTLOOK_SENDER to the exact UCalgary account in your Outlook profile.")
+
+        try:
+            import pythoncom
+            import win32com.client
+        except ImportError as exc:
+            raise OutreachError("Outlook sending requires pywin32. Install it with: python -m pip install pywin32") from exc
+
+        self.pythoncom = pythoncom
+        self.pythoncom.CoInitialize()
+        try:
+            self.outlook = win32com.client.Dispatch("Outlook.Application")
+            self.account = self._find_account()
+        except OutreachError:
+            self.pythoncom.CoUninitialize()
+            raise
+        except Exception as exc:
+            self.pythoncom.CoUninitialize()
+            raise OutreachError(
+                f"Could not open the configured Outlook desktop profile. "
+                f"Open classic Outlook with the UCalgary account first. Details: {exc}"
+            ) from exc
+
+    def _find_account(self) -> Any:
+        accounts = self.outlook.Session.Accounts
+        for index in range(1, accounts.Count + 1):
+            account = accounts.Item(index)
+            try:
+                address = str(account.SmtpAddress or "").strip().casefold()
+            except Exception:
+                address = ""
+            if address == self.sender:
+                return account
+        raise OutreachError(
+            f"The Outlook profile does not contain the requested sender {self.sender}. "
+            "Check OUTLOOK_SENDER against the account address shown in Outlook."
+        )
 
     def send(self, to_email: str, subject: str, body: str, attachments: list[Path]) -> None:
-        message: dict[str, Any] = {
-            "subject": subject,
-            "body": {"contentType": "Text", "content": body},
-            "toRecipients": [{"emailAddress": {"address": to_email}}],
-            "attachments": [
-                {"@odata.type": "#microsoft.graph.fileAttachment", "name": path.name,
-                 "contentType": "application/pdf", "contentBytes": base64.b64encode(path.read_bytes()).decode("ascii")}
-                for path in attachments
-            ],
-        }
-        endpoint = "https://graph.microsoft.com/v1.0/me/sendMail"
         try:
-            response = requests.post(
-                endpoint,
-                headers={"Authorization": f"Bearer {self._token()}", "Content-Type": "application/json"},
-                json={"message": message, "saveToSentItems": True},
-                timeout=50,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            detail = f" Response: {exc.response.text[:700]}" if getattr(exc, "response", None) is not None else ""
-            raise OutreachError(f"Microsoft Graph send failed: {exc}.{detail}") from exc
+            message = self.outlook.CreateItem(0)  # 0 = olMailItem
+            message.SendUsingAccount = self.account
+            message.To = to_email
+            message.Subject = subject
+            message.Body = body
+            for path in attachments:
+                message.Attachments.Add(str(path.resolve()))
+            message.Send()
+        except Exception as exc:
+            raise OutreachError(f"Outlook could not submit the message to {to_email}: {exc}") from exc
+
+    def close(self) -> None:
+        self.account = None
+        self.outlook = None
+        try:
+            self.pythoncom.CoUninitialize()
+        except Exception:
+            pass
 
 
-def build_mailer() -> GraphMailer:
-    # UCalgary outreach uses delegated Microsoft Graph authentication only.
-    return GraphMailer()
+def build_mailer() -> OutlookMailer:
+    # Uses the Outlook account already configured for this Windows profile.
+    return OutlookMailer()
 
 
 def validate_attachments() -> list[Path]:
@@ -456,7 +474,7 @@ def run(args: argparse.Namespace) -> int:
                     log_event(name, email, "error", draft["subject"], detail)
                     errors += 1
                     continue
-                log_event(name, email, "sent", draft["subject"])
+                log_event(name, email, "sent", draft["subject"], "Submitted through Outlook desktop.")
                 sent_emails.add(email)
                 sent_today += 1
                 sends += 1
@@ -474,6 +492,9 @@ def run(args: argparse.Namespace) -> int:
             print(f"ERROR {name}: {detail}")
             log_event(name, email, "error", detail=detail)
             errors += 1
+
+    if mailer is not None:
+        mailer.close()
 
     mode = "sent" if args.send else "prepared"
     print(f"\nComplete: {drafts} sendable email(s) {mode}; {sends} sent; {errors} error(s).")

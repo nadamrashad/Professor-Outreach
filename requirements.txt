@@ -1,5 +1,5 @@
 beautifulsoup4>=4.12
-msal>=1.30
+pywin32>=306; platform_system == "Windows"
 pypdf>=5.0
 python-dotenv>=1.0
 requests>=2.32

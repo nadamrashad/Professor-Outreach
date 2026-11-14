@@ -1,4 +1,4 @@
-# UCalgary research outreach
+﻿# UCalgary research outreach
 
 The script prepares short, professor-specific research inquiry emails from a static profile page and your resume. It attaches the same resume and transcript PDFs to every sent message. It skips professors in `do_not_contact.csv`, anyone already marked `sent` in `sent_log.csv`, and profiles the AI judges to lack research information or a credible fit.
 
@@ -6,7 +6,7 @@ The script prepares short, professor-specific research inquiry emails from a sta
 
 1. Install Python 3.10 or newer.
 2. Install dependencies: `python -m pip install -r requirements.txt`
-3. Edit your existing `.env` file. Set `AI_PROVIDER=gemini`, add your Gemini key as `GEMINI_API_KEY` (or `AI_API_KEY`), set `AI_MODEL` to an available Gemini model, and configure the Microsoft Graph values described below. Keep `.env` private; do not paste the key into chat or commit it.
+3. Edit your existing .env file. Set AI_PROVIDER=gemini, add your Gemini key as GEMINI_API_KEY (or AI_API_KEY), set AI_MODEL to an available Gemini model, and set OUTLOOK_SENDER=nada.mohamed1@ucalgary.ca. Keep .env private; do not paste the key into chat or commit it.
 4. Save the two PDFs in this folder as `resume.pdf` and `transcript.pdf`, or change `RESUME_PDF` and `TRANSCRIPT_PDF` in `.env`.
 5. Review the starter list in `professors.csv` and add/remove rows as you like. It includes `name,email,profile_url` plus fit, funding, and contact notes; the notes help the generator avoid assuming that a lab has current salary funding.
 6. Add any addresses to suppress to `do_not_contact.csv` under its `email` column. Matching ignores capitalization and surrounding whitespace. Exclusions are checked before the script fetches the profile or calls the AI API.
@@ -35,11 +35,9 @@ python .\send_outreach.py --send --limit 5
 
 The script pauses a random 45–150 seconds between successful sends and stops after 40 successful sends per UTC day. `--limit` caps the number of professor rows considered. Successful deliveries are logged in `sent_log.csv`, and reruns skip those addresses. Errors are recorded and do not stop later rows.
 
-## Microsoft Graph email
+## Outlook desktop email
 
-The sender uses Microsoft Graph with your UCalgary Microsoft 365 account; it does not use SMTP or an email password. In Microsoft Entra, register a public client app for your UCalgary organization, enable public client/device-code flow, and add the Microsoft Graph **delegated** `Mail.Send` permission. Put the app's Application (client) ID in `MS_CLIENT_ID` and its Directory (tenant) ID in `MS_TENANT_ID` in `.env`. Do not create a client secret. If app registration or consent is blocked by university policy, ask UCalgary IT Support at `it@ucalgary.ca` whether they can approve or provide a client app for delegated Microsoft Graph `Mail.Send`.
-
-When `--send` first runs, the script displays a device sign-in code. Open the displayed Microsoft sign-in page and sign in as `nada.mohamed1@ucalgary.ca`. Graph sends from that signed-in account and saves a copy in Sent Items. Microsoft documents `Mail.Send` as the least-privileged delegated permission for `/me/sendMail`, including messages with file attachments: [sendMail API](https://learn.microsoft.com/en-us/graph/api/user-sendmail?view=graph-rest-1.0). Device-code authentication uses a public client app: [Microsoft Entra public client guidance](https://learn.microsoft.com/en-us/entra/identity-platform/msal-client-applications).
+The sender uses pywin32 to automate the Outlook desktop profile already configured on this Windows account. It does not use SMTP, Microsoft Graph, an Entra app registration, or a separate email password. The script selects the Outlook profile account whose SMTP address matches OUTLOOK_SENDER; it stops if that account is not present, so it will not silently send from a different profile account. Run it on the same Windows desktop where Outlook is configured. The notebook's Outlook code targets a shared mailbox and saves drafts; this sender uses your own UCalgary account and submits each message with Outlook's Send command.
 
 ## Gemini and privacy
 
@@ -54,3 +52,4 @@ Profile pages that depend on JavaScript may have too little readable text and wi
 - `sent_log.csv`: sent status and per-row skips/errors
 - `outreach_drafts.csv`: generated draft text (ignored by Git)
 - `.env`: local secrets and personal configuration (ignored by Git)
+
