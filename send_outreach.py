@@ -14,12 +14,10 @@ import json
 import os
 import random
 import re
-import smtplib
-import ssl
+from urllib.parse import quote
 import sys
 import time
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
@@ -178,9 +176,42 @@ def extract_openai_text(data: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def extract_gemini_text(data: dict[str, Any]) -> str:
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return ""
+    parts = candidates[0].get("content", {}).get("parts", [])
+    return "".join(
+        part.get("text", "")
+        for part in parts
+        if isinstance(part.get("text"), str)
+    ).strip()
+
+
 def call_ai(provider: str, api_key: str, model: str, user_prompt: str) -> str:
     timeout = 75
     try:
+        if provider == "gemini":
+            model_id = model.removeprefix("models/")
+            endpoint = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{quote(model_id, safe='-._')}:generateContent"
+            )
+            response = requests.post(
+                endpoint,
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json={
+                    "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                    "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "maxOutputTokens": 900,
+                    },
+                },
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            return extract_gemini_text(response.json())
         if provider == "anthropic":
             response = requests.post(
                 "https://api.anthropic.com/v1/messages",
@@ -268,43 +299,10 @@ def validate_draft(draft: dict[str, str]) -> None:
         raise OutreachError("Generated body contains an unresolved placeholder.")
 
 
-class SmtpMailer:
-    def __init__(self) -> None:
-        self.host = require_setting("SMTP_HOST")
-        self.port = int(os.getenv("SMTP_PORT", "587"))
-        self.username = require_setting("SMTP_USER")
-        self.password = require_setting("SMTP_PASS")
-        self.security = os.getenv("SMTP_SECURITY", "starttls").strip().casefold()
-        if self.security not in {"starttls", "ssl"}:
-            raise OutreachError("SMTP_SECURITY must be 'starttls' or 'ssl'.")
-        self.sender = os.getenv("SMTP_FROM", self.username).strip()
-
-    def send(self, to_email: str, subject: str, body: str, attachments: list[Path]) -> None:
-        message = EmailMessage()
-        message["From"] = self.sender
-        message["To"] = to_email
-        message["Subject"] = subject
-        message.set_content(body)
-        for path in attachments:
-            message.add_attachment(path.read_bytes(), maintype="application", subtype="pdf", filename=path.name)
-        context = ssl.create_default_context()
-        if self.security == "ssl":
-            with smtplib.SMTP_SSL(self.host, self.port, context=context, timeout=40) as server:
-                server.login(self.username, self.password)
-                server.send_message(message)
-        else:
-            with smtplib.SMTP(self.host, self.port, timeout=40) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                server.login(self.username, self.password)
-                server.send_message(message)
-
-
 class GraphMailer:
     def __init__(self) -> None:
         self.client_id = require_setting("MS_CLIENT_ID")
-        tenant = os.getenv("MS_TENANT_ID", "common").strip() or "common"
+        tenant = require_setting("MS_TENANT_ID")
         self.authority = f"https://login.microsoftonline.com/{tenant}"
         self.scopes = ["Mail.Send"]
         self.app = msal.PublicClientApplication(self.client_id, authority=self.authority)
@@ -351,13 +349,9 @@ class GraphMailer:
             raise OutreachError(f"Microsoft Graph send failed: {exc}.{detail}") from exc
 
 
-def build_mailer() -> Any:
-    backend = os.getenv("EMAIL_BACKEND", "smtp").strip().casefold()
-    if backend == "smtp":
-        return SmtpMailer()
-    if backend == "graph":
-        return GraphMailer()
-    raise OutreachError("EMAIL_BACKEND must be 'smtp' or 'graph'.")
+def build_mailer() -> GraphMailer:
+    # UCalgary outreach uses delegated Microsoft Graph authentication only.
+    return GraphMailer()
 
 
 def validate_attachments() -> list[Path]:
@@ -378,8 +372,18 @@ def append_draft(name: str, email: str, status: str, subject: str, body: str, de
 
 def run(args: argparse.Namespace) -> int:
     load_dotenv(ROOT / ".env")
-    api_key = require_setting("AI_API_KEY")
-    provider = os.getenv("AI_PROVIDER", "anthropic").strip().casefold()
+    provider = os.getenv("AI_PROVIDER", "gemini").strip().casefold()
+    if provider == "gemini":
+        api_key = (
+            os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or os.getenv("AI_API_KEY")
+            or ""
+        ).strip()
+        if not api_key:
+            raise OutreachError("Set GEMINI_API_KEY (or AI_API_KEY) in your .env file.")
+    else:
+        api_key = require_setting("AI_API_KEY")
     model = require_setting("AI_MODEL")
     require_setting("GRADUATION_DATE")
 
