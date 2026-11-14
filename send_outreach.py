@@ -195,20 +195,35 @@ def call_ai(provider: str, api_key: str, model: str, user_prompt: str) -> str:
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{quote(model_id, safe='-._')}:generateContent"
             )
-            response = requests.post(
-                endpoint,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json={
-                    "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-                    "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                    "generationConfig": {
-                        "responseMimeType": "application/json",
-                        "maxOutputTokens": 900,
-                    },
+            request_body = {
+                "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "maxOutputTokens": 900,
                 },
-                timeout=timeout,
-            )
-            response.raise_for_status()
+            }
+            retryable_statuses = {429, 500, 502, 503, 504}
+            max_attempts = 4
+            for attempt in range(max_attempts):
+                response = requests.post(
+                    endpoint,
+                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    json=request_body,
+                    timeout=timeout,
+                )
+                if response.status_code not in retryable_statuses:
+                    response.raise_for_status()
+                    break
+                if attempt == max_attempts - 1:
+                    response.raise_for_status()
+                delay = 5 * (2 ** attempt)
+                print(
+                    f"Gemini returned HTTP {response.status_code}; retrying in {delay} seconds "
+                    f"(attempt {attempt + 2}/{max_attempts}).",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
             return extract_gemini_text(response.json())
         if provider == "anthropic":
             response = requests.post(

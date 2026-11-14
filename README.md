@@ -43,6 +43,8 @@ The sender uses pywin32 to automate the Outlook desktop profile already configur
 
 Set `AI_PROVIDER=gemini`, `GEMINI_API_KEY` (or `AI_API_KEY`), and `AI_MODEL` in `.env`. The script calls Gemini's `generateContent` REST API using the key in an HTTP header. Resume PDF text is sent to Gemini to tailor messages; the transcript is attached to email but is not sent to the AI provider. Google documents the API key header and `generateContent` endpoint in its [Gemini API reference](https://ai.google.dev/api/generate-content).
 
+Temporary Gemini API responses (HTTP 429, 500, 502, 503, or 504) are retried up to three times, waiting 5, 10, then 20 seconds. Other errors are reported immediately.
+
 Profile pages that depend on JavaScript may have too little readable text and will be logged as errors/skipped for browser rendering. The script does not currently use a browser to scrape those pages.
 
 ## Files
